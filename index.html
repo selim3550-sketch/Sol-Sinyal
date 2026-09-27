@@ -188,6 +188,7 @@ pre{margin:0;font:12px/1.5 var(--f-mono);background:var(--soft);border:1px solid
           <label>WT yukarı kesişim, WT altında<input id="p_wtOs" type="number" step="1" inputmode="decimal"></label>
           <label>RSI altında<input id="p_rsiB" type="number" step="1" inputmode="decimal"></label>
           <label>StochRSI K altında<input id="p_stoB" type="number" step="1" inputmode="decimal"></label>
+          <label>Trend filtresi: fiyat EMA üstünde (0 = kapalı)<input id="p_ema" type="number" step="10" inputmode="numeric"></label>
         </div>
       </fieldset>
       <fieldset style="grid-column:1/-1"><legend>Satış koşulu (biri yeterli, ayrıca SL/TP)</legend>
@@ -221,7 +222,7 @@ pre{margin:0;font:12px/1.5 var(--f-mono);background:var(--soft);border:1px solid
 <script>
 (function(){
 const $=id=>document.getElementById(id);
-const DEF={cap:200,stake:100,dayT:20,dayL:10,sl:3,tp:6,fee:0.1,wtOs:-53,rsiB:45,stoB:30,wtOb:53,rsiS:70};
+const DEF={cap:200,stake:100,dayT:20,dayL:10,sl:3,tp:6,fee:0.1,wtOs:-53,rsiB:45,stoB:30,wtOb:53,rsiS:70,ema:200};
 let P={...DEF};
 try{const s=JSON.parse(localStorage.getItem('solsig_p')||'null');if(s)P={...DEF,...s};}catch(e){}
 let candles=[],source='sample',lastRes=null;
@@ -337,17 +338,17 @@ function waveTrend(c,n1,n2){const ap=c.map(x=>(x.h+x.l+x.c)/3);const esa=ema(ap,
 
 /* ---------- backtest ---------- */
 function backtest(){
-  const cl=candles.map(x=>x.c);const R=rsi(cl,14);const S=stochRsi(R,14,3,3);const W=waveTrend(candles,10,21);
+  const cl=candles.map(x=>x.c);const E=P.ema>0?ema(cl,P.ema):null;const R=rsi(cl,14);const S=stochRsi(R,14,3,3);const W=waveTrend(candles,10,21);
   const fee=P.fee/100,n=candles.length,DAY=864e5,TZ=3*3600e3;
   let cash=P.cap,pos=null,trades=[],eq=[],hold=[],feeSum=0;
   let day=-1,dayStart=cash,dayPnl=0,blocked=null,daysT=0,daysL=0;
-  const buySig=i=>W.wt1[i-1]<=W.wt2[i-1]&&W.wt1[i]>W.wt2[i]&&W.wt1[i]<P.wtOs&&R[i]<P.rsiB&&S.k[i]<P.stoB;
+  const buySig=i=>W.wt1[i-1]<=W.wt2[i-1]&&W.wt1[i]>W.wt2[i]&&W.wt1[i]<P.wtOs&&R[i]<P.rsiB&&S.k[i]<P.stoB&&(!E||cl[i]>E[i]);
   const sellSig=i=>(W.wt1[i-1]>=W.wt2[i-1]&&W.wt1[i]<W.wt2[i]&&W.wt1[i]>P.wtOb)||R[i]>P.rsiS;
   const close=(i,price,why)=>{const val=pos.qty*price;const f=val*fee;feeSum+=f;const got=val-f;const pnl=got-pos.cost;
     cash+=got;dayPnl+=pnl;trades.push({t:pos.t,ti:i,e:pos.px,x:price,why,pnl,pct:pnl/pos.cost*100,bi:pos.i});pos=null;
     if(!blocked&&dayPnl>=P.dayT){blocked='T';daysT++;}
     if(!blocked&&dayPnl<=-dayStart*P.dayL/100){blocked='L';daysL++;}};
-  const warm=60;const q0=P.cap/candles[warm].c;
+  const warm=Math.min(n-2,Math.max(60,P.ema|0));const q0=P.cap/candles[warm].c;
   for(let i=warm;i<n;i++){
     const x=candles[i];const d=Math.floor((x.t+TZ)/DAY);
     if(d!==day){day=d;dayStart=cash+(pos?pos.qty*x.o:0);dayPnl=0;blocked=null;}
@@ -364,7 +365,7 @@ function backtest(){
   const last=n-1;
   return{R,S,W,trades,eq,hold,mdd,feeSum,daysT,daysL,open:pos,final:eq.length?eq[eq.length-1].v:P.cap,
     wr:trades.length?wins.length/trades.length:0,pf:gl>0?gp/gl:(gp>0?Infinity:0),
-    lastBuy:buySig(last),lastSell:sellSig(last),warm};
+    lastBuy:buySig(last),lastSell:sellSig(last),warm,E};
 }
 
 /* ---------- render ---------- */
@@ -385,7 +386,7 @@ function render(r){
   if(r.open){ if(r.lastSell){s='sell';txt='SAT';why='Açık pozisyon var ve satış koşulu oluştu.';}
     else{s='wait';txt='TUT';why='Açık pozisyon: giriş '+fmt(r.open.px)+' $. SL '+fmt(r.open.px*(1-P.sl/100))+' · TP '+fmt(r.open.px*(1+P.tp/100))+'.';}}
   else if(r.lastBuy){s='buy';txt='AL';why='WaveTrend aşırı satım bölgesinde yukarı kesti, RSI ve StochRSI düşük.';}
-  else why='Alış için: WT '+P.wtOs+' altında yukarı kesişim + RSI < '+P.rsiB+' + StochRSI K < '+P.stoB+'.';
+  else{why='Alış için: WT '+P.wtOs+' altında yukarı kesişim + RSI < '+P.rsiB+' + StochRSI K < '+P.stoB+(r.E?' + fiyat EMA'+P.ema+' üstünde. Şu an fiyat EMA'+P.ema+' ('+fmt(r.E[L])+' $) '+(x.c>r.E[L]?'üstünde, trend uygun.':'altında, düşüş trendi: alış yapılmaz.'):'.');}
   box.className='sigbox '+s;$('sigTxt').textContent=txt;$('sigPrice').textContent=fmt(x.c)+' $';$('sigWhy').textContent=why;
 
   const net=r.final-P.cap;
@@ -453,7 +454,7 @@ class SolWtRsiStoch(IStrategy):
     can_short = False
     stoploss = -${(P.sl/100).toFixed(4)}
     minimal_roi = {"0": ${(P.tp/100).toFixed(4)}}
-    startup_candle_count = 60
+    startup_candle_count = ${Math.max(60,P.ema|0)}
     # stake_amount = ${P.stake}   -> config.json içinde ayarlanır
 
     def populate_indicators(self, df: DataFrame, metadata: dict) -> DataFrame:
@@ -467,12 +468,13 @@ class SolWtRsiStoch(IStrategy):
         ci = (ap - esa) / (0.015 * d)
         df["wt1"] = ci.ewm(span=21, adjust=False).mean()
         df["wt2"] = df["wt1"].rolling(4).mean()
+        df["ema_trend"] = ta.EMA(df, timeperiod=${P.ema>0?P.ema:200})
         return df
 
     def populate_entry_trend(self, df: DataFrame, metadata: dict) -> DataFrame:
         cross_up = (df["wt1"].shift(1) <= df["wt2"].shift(1)) & (df["wt1"] > df["wt2"])
         df.loc[cross_up & (df["wt1"] < ${P.wtOs}) & (df["rsi"] < ${P.rsiB})
-               & (df["stoch_k"] < ${P.stoB}), "enter_long"] = 1
+               & (df["stoch_k"] < ${P.stoB})${P.ema>0?' & (df["close"] > df["ema_trend"])':''}, "enter_long"] = 1
         return df
 
     def populate_exit_trend(self, df: DataFrame, metadata: dict) -> DataFrame:
