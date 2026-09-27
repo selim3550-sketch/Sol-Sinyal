@@ -202,6 +202,14 @@ pre{margin:0;font:12px/1.5 var(--f-mono);background:var(--soft);border:1px solid
     <p class="note">Sinyal mum kapanışında hesaplanır, işlem o kapanış fiyatından varsayılır. SL/TP mum içi en düşük/en yüksek fiyatla kontrol edilir; ikisi aynı mumdaysa önce SL sayılır. Günler Türkiye saatiyle (UTC+3) başlar.</p>
   </section>
 
+  <section class="panel" aria-labelledby="h-scan">
+    <h2 id="h-scan">Otomatik ayar tarama</h2>
+    <p class="note">Yaklaşık 1.700 ayar kombinasyonunu dener. Verinin ilk %70'inde en iyi sonuç verenleri seçer, sonra son %30'da (stratejinin hiç görmediği dönem) tekrar test eder. Asıl güvenilir sütun <b>Test</b> sütunudur: eğitimde iyi olup testte kötü olan ayar geçmişe ezberlenmiştir.</p>
+    <div class="btns"><button id="scanBtn" class="primary" type="button">Taramayı başlat</button></div>
+    <div id="scanMsg" class="msg">Satış koşulları, sermaye ve günlük kurallar yukarıdaki değerlerden alınır.</div>
+    <div class="tablewrap"><table><thead><tr><th>Ayar</th><th>Eğitim K/Z $</th><th>İşlem / Kaz.</th><th>Test K/Z $</th><th>İşlem / Kaz.</th><th></th></tr></thead><tbody id="scanBody"></tbody></table></div>
+  </section>
+
   <section class="panel" aria-labelledby="h-tr">
     <h2 id="h-tr">İşlemler</h2>
     <div class="tablewrap"><table><thead><tr><th>Giriş</th><th>Giriş $</th><th>Çıkış $</th><th>Sebep</th><th>K/Z USDT</th><th>%</th></tr></thead><tbody id="tBody"></tbody></table></div>
@@ -337,35 +345,82 @@ function waveTrend(c,n1,n2){const ap=c.map(x=>(x.h+x.l+x.c)/3);const esa=ema(ap,
   const ci=ap.map((v,i)=>d[i]?(v-esa[i])/(0.015*d[i]):0);const wt1=ema(ci,n2);const wt2=sma(wt1,4);return{wt1,wt2};}
 
 /* ---------- backtest ---------- */
-function backtest(){
-  const cl=candles.map(x=>x.c);const E=P.ema>0?ema(cl,P.ema):null;const R=rsi(cl,14);const S=stochRsi(R,14,3,3);const W=waveTrend(candles,10,21);
-  const fee=P.fee/100,n=candles.length,DAY=864e5,TZ=3*3600e3;
-  let cash=P.cap,pos=null,trades=[],eq=[],hold=[],feeSum=0;
-  let day=-1,dayStart=cash,dayPnl=0,blocked=null,daysT=0,daysL=0;
-  const buySig=i=>W.wt1[i-1]<=W.wt2[i-1]&&W.wt1[i]>W.wt2[i]&&W.wt1[i]<P.wtOs&&R[i]<P.rsiB&&S.k[i]<P.stoB&&(!E||cl[i]>E[i]);
-  const sellSig=i=>(W.wt1[i-1]>=W.wt2[i-1]&&W.wt1[i]<W.wt2[i]&&W.wt1[i]>P.wtOb)||R[i]>P.rsiS;
+let IND=null;
+function getInd(){const n=candles.length;
+  if(IND&&IND.n===n&&IND.t===candles[n-1].t&&IND.t0===candles[0].t)return IND;
+  const cl=candles.map(x=>x.c);const R=rsi(cl,14);
+  IND={n,t:candles[n-1].t,t0:candles[0].t,cl,R,S:stochRsi(R,14,3,3),W:waveTrend(candles,10,21),E:{}};return IND;}
+function emaOf(p){const I=getInd();if(!(p>0))return null;if(!I.E[p])I.E[p]=ema(I.cl,p);return I.E[p];}
+function backtest(Q,i0,i1,lite){
+  Q=Q||P;const I=getInd();const{cl,R,S,W}=I;const E=emaOf(Q.ema);
+  const fee=Q.fee/100,n=candles.length,DAY=864e5,TZ=3*3600e3;
+  const warm=Math.min(n-2,Math.max(60,Q.ema|0));
+  const start=Math.max(warm,i0==null?warm:i0),end=i1==null?n:Math.min(n,i1);
+  let cash=Q.cap,pos=null,trades=[],eq=lite?null:[],hold=lite?null:[],feeSum=0,peak=Q.cap,mdd=0;
+  let day=-1,dayStart=cash,dayPnl=0,blocked=null,daysT=0,daysL=0,nT=0,nW=0,gp=0,gl=0;
+  const buySig=i=>W.wt1[i-1]<=W.wt2[i-1]&&W.wt1[i]>W.wt2[i]&&W.wt1[i]<Q.wtOs&&R[i]<Q.rsiB&&S.k[i]<Q.stoB&&(!E||cl[i]>E[i]);
+  const sellSig=i=>(W.wt1[i-1]>=W.wt2[i-1]&&W.wt1[i]<W.wt2[i]&&W.wt1[i]>Q.wtOb)||R[i]>Q.rsiS;
   const close=(i,price,why)=>{const val=pos.qty*price;const f=val*fee;feeSum+=f;const got=val-f;const pnl=got-pos.cost;
-    cash+=got;dayPnl+=pnl;trades.push({t:pos.t,ti:i,e:pos.px,x:price,why,pnl,pct:pnl/pos.cost*100,bi:pos.i});pos=null;
-    if(!blocked&&dayPnl>=P.dayT){blocked='T';daysT++;}
-    if(!blocked&&dayPnl<=-dayStart*P.dayL/100){blocked='L';daysL++;}};
-  const warm=Math.min(n-2,Math.max(60,P.ema|0));const q0=P.cap/candles[warm].c;
-  for(let i=warm;i<n;i++){
+    cash+=got;dayPnl+=pnl;nT++;if(pnl>0){nW++;gp+=pnl;}else gl-=pnl;
+    if(!lite)trades.push({t:pos.t,ti:i,e:pos.px,x:price,why,pnl,pct:pnl/pos.cost*100,bi:pos.i});pos=null;
+    if(!blocked&&dayPnl>=Q.dayT){blocked='T';daysT++;}
+    if(!blocked&&dayPnl<=-dayStart*Q.dayL/100){blocked='L';daysL++;}};
+  const q0=Q.cap/candles[start].c;
+  for(let i=start;i<end;i++){
     const x=candles[i];const d=Math.floor((x.t+TZ)/DAY);
     if(d!==day){day=d;dayStart=cash+(pos?pos.qty*x.o:0);dayPnl=0;blocked=null;}
-    if(pos){const slp=pos.px*(1-P.sl/100),tpp=pos.px*(1+P.tp/100);
-      if(P.sl>0&&x.l<=slp)close(i,Math.min(slp,x.o),'SL');
-      else if(P.tp>0&&x.h>=tpp)close(i,Math.max(tpp,x.o),'TP');
+    if(pos){const slp=pos.px*(1-Q.sl/100),tpp=pos.px*(1+Q.tp/100);
+      if(Q.sl>0&&x.l<=slp)close(i,Math.min(slp,x.o),'SL');
+      else if(Q.tp>0&&x.h>=tpp)close(i,Math.max(tpp,x.o),'TP');
       else if(sellSig(i))close(i,x.c,'Sinyal');}
-    else if(!blocked&&buySig(i)){const use=Math.min(P.stake,cash);if(use>1){const f=use*fee;feeSum+=f;
+    else if(!blocked&&i<end-1&&buySig(i)){const use=Math.min(Q.stake,cash);if(use>1){const f=use*fee;feeSum+=f;
       pos={t:x.t,i,px:x.c,qty:(use-f)/x.c,cost:use};cash-=use;}}
-    eq.push({t:x.t,v:cash+(pos?pos.qty*x.c:0)});hold.push({t:x.t,v:q0*x.c});
+    const v=cash+(pos?pos.qty*x.c:0);peak=Math.max(peak,v);mdd=Math.max(mdd,(peak-v)/peak);
+    if(!lite){eq.push({t:x.t,v});hold.push({t:x.t,v:q0*x.c});}
   }
-  let peak=-Infinity,mdd=0;for(const e of eq){peak=Math.max(peak,e.v);mdd=Math.max(mdd,(peak-e.v)/peak);}
-  const wins=trades.filter(t=>t.pnl>0),gp=wins.reduce((s,t)=>s+t.pnl,0),gl=-trades.filter(t=>t.pnl<=0).reduce((s,t)=>s+t.pnl,0);
+  const final=cash+(pos?pos.qty*candles[end-1].c:0);
+  const res={nT,mdd,feeSum,daysT,daysL,final,net:final-Q.cap,wr:nT?nW/nT:0,pf:gl>0?gp/gl:(gp>0?Infinity:0)};
+  if(lite)return res;
   const last=n-1;
-  return{R,S,W,trades,eq,hold,mdd,feeSum,daysT,daysL,open:pos,final:eq.length?eq[eq.length-1].v:P.cap,
-    wr:trades.length?wins.length/trades.length:0,pf:gl>0?gp/gl:(gp>0?Infinity:0),
-    lastBuy:buySig(last),lastSell:sellSig(last),warm,E};
+  return Object.assign(res,{R,S,W,trades,eq,hold,open:pos,lastBuy:buySig(last),lastSell:sellSig(last),warm:start,E});
+}
+
+/* ---------- tarama ---------- */
+const GRID={wtOs:[-30,-40,-53,-65],rsiB:[40,45,50,55],stoB:[20,30,45],ema:[0,50,100,200],sl:[2,3,4],tp:[3,5,8]};
+let scanning=false;
+function runScan(){
+  if(scanning)return;scanning=true;readForm();
+  const n=candles.length,warm=260,split=Math.floor(warm+(n-warm)*0.7);
+  const combos=[];
+  for(const a of GRID.wtOs)for(const b of GRID.rsiB)for(const c of GRID.stoB)for(const e of GRID.ema)for(const f of GRID.sl)for(const g of GRID.tp)
+    combos.push({...P,wtOs:a,rsiB:b,stoB:c,ema:e,sl:f,tp:g});
+  const out=[];let k=0;const btn=$('scanBtn');btn.disabled=true;
+  $('scanMsg').textContent='Taranıyor… 0 / '+combos.length;
+  const step=()=>{const t0=performance.now();
+    while(k<combos.length&&performance.now()-t0<40){const Q=combos[k++];
+      const tr=backtest(Q,warm,split,true);if(tr.nT>=8&&tr.net>0)out.push({Q,tr});}
+    $('scanMsg').textContent='Taranıyor… '+k+' / '+combos.length;
+    if(k<combos.length){setTimeout(step,0);return;}
+    out.sort((x,y)=>y.tr.net-x.tr.net);const top=out.slice(0,8);
+    for(const o of top)o.te=backtest(o.Q,split,n,true);
+    renderScan(top,combos.length,out.length,split);btn.disabled=false;scanning=false;};
+  setTimeout(step,30);
+}
+function renderScan(top,total,okCount,split){
+  const body=$('scanBody');body.innerHTML='';
+  const tf=t=>fdt(candles[t].t).slice(0,10);
+  $('scanMsg').textContent=total+' kombinasyon denendi. Eğitim döneminde kârlı ve en az 8 işlemli olan: '+okCount+'. Eğitim: '+tf(260)+' → '+tf(split)+' · Test (görmediği veri): '+tf(split)+' → '+tf(candles.length-1)+'.';
+  if(!top.length){body.innerHTML='<tr><td colspan="6" style="text-align:left;font-family:var(--f-body)">Eğitim döneminde kârlı çıkan ayar bulunamadı. Bu strateji bu dönemde SOL\'de işe yaramıyor.</td></tr>';return;}
+  top.forEach((o,ix)=>{const q=o.Q,tr=document.createElement('tr');
+    const c=v=>v>0?'pos':'neg';
+    tr.innerHTML='<td>WT '+q.wtOs+' · RSI '+q.rsiB+' · K '+q.stoB+' · EMA '+(q.ema||'yok')+' · SL '+q.sl+' · TP '+q.tp+'</td>'+
+      '<td class="'+c(o.tr.net)+'">'+(o.tr.net>0?'+':'')+fmt(o.tr.net)+'</td><td>'+o.tr.nT+' / %'+fmt(o.tr.wr*100,0)+'</td>'+
+      '<td class="'+c(o.te.net)+'">'+(o.te.net>0?'+':'')+fmt(o.te.net)+'</td><td>'+o.te.nT+' / %'+fmt(o.te.wr*100,0)+'</td>'+
+      '<td><button type="button" class="apply" data-i="'+ix+'" style="min-height:34px;padding:4px 10px;font-size:13px">Uygula</button></td>';
+    body.appendChild(tr);});
+  body.querySelectorAll('.apply').forEach(b=>b.addEventListener('click',()=>{const q=top[+b.dataset.i].Q;
+    for(const k of Object.keys(GRID))P[k]=q[k];fillForm();readForm();run();
+    $('h-bt').scrollIntoView({behavior:'smooth',block:'start'});}));
 }
 
 /* ---------- render ---------- */
@@ -408,7 +463,7 @@ function render(r){
   drawPrice(r);drawEq(r);$('pyOut').textContent=py();
 }
 
-function setupCanvas(cv){const dpr=window.devicePixelRatio||1;const w=cv.clientWidth,h=+cv.getAttribute('height');
+function setupCanvas(cv){const dpr=window.devicePixelRatio||1;const w=cv.clientWidth;if(!cv.dataset.h)cv.dataset.h=cv.getAttribute('height');const h=+cv.dataset.h;
   cv.width=w*dpr;cv.height=h*dpr;cv.style.height=h+'px';const g=cv.getContext('2d');g.setTransform(dpr,0,0,dpr,0,0);return{g,w,h};}
 function axes(g,w,h,pad,mn,mx,fmtY){g.strokeStyle=css('--chart-grid');g.fillStyle=css('--muted');g.lineWidth=1;g.font='11px '+css('--f-mono');
   g.textAlign='right';g.textBaseline='middle';
@@ -493,6 +548,7 @@ function readForm(){for(const k of keys){const v=parseFloat($('p_'+k).value);if(
   try{localStorage.setItem('solsig_p',JSON.stringify(P));}catch(e){}}
 function run(){setBadge();if(candles.length<120){setMsg('Backtest için en az 120 mum gerekli.',true);return;}lastRes=backtest();render(lastRes);}
 $('runBtn').addEventListener('click',()=>{readForm();run();});
+$('scanBtn').addEventListener('click',runScan);
 $('pform').addEventListener('submit',e=>{e.preventDefault();readForm();run();});
 $('resetBtn').addEventListener('click',()=>{P={...DEF};fillForm();readForm();run();});
 $('copyBtn').addEventListener('click',async()=>{const b=$('copyBtn');
