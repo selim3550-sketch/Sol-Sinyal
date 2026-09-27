@@ -1,0 +1,93 @@
+//@version=6
+indicator("SOL Sinyal (WT+RSI+StochRSI)", overlay=true, max_labels_count=300)
+
+wtOs   = input.float(-30, "Alış: WT altında")
+rsiB   = input.float(50,  "Alış: RSI altında")
+stoB   = input.float(45,  "Alış: StochRSI K altında")
+emaLen = input.int(200,   "Trend filtresi EMA (0 = kapalı)")
+wtOb   = input.float(53,  "Satış: WT üstünde")
+rsiS   = input.float(70,  "Satış: RSI üstünde")
+slPct  = input.float(2,   "Zarar kes (Stop-loss) %")
+tpPct  = input.float(8,   "Kâr al (Take-profit) %")
+tblYer = input.string("Alt orta", "Tablo yeri", options=["Üst sağ", "Alt orta", "Alt sağ", "Alt sol", "Orta sol"])
+tblBoy = input.string("Küçük", "Tablo yazı boyu", options=["Çok küçük", "Küçük", "Normal"])
+
+ap  = hlc3
+esa = ta.ema(ap, 10)
+d   = ta.ema(math.abs(ap - esa), 10)
+ci  = (ap - esa) / (0.015 * d)
+wt1 = ta.ema(ci, 21)
+wt2 = ta.sma(wt1, 4)
+rsi = ta.rsi(close, 14)
+stK = ta.sma(ta.stoch(rsi, rsi, rsi, 14), 3)
+emaT = ta.ema(close, emaLen > 0 ? emaLen : 200)
+trendOk = emaLen <= 0 or close > emaT
+
+buyCond  = ta.crossover(wt1, wt2) and wt1 < wtOs and rsi < rsiB and stK < stoB and trendOk
+sellCond = (ta.crossunder(wt1, wt2) and wt1 > wtOb) or rsi > rsiS
+
+var bool  inPos   = false
+var float entryPx = na
+var float tpLvl   = na
+var float slLvl   = na
+
+enterNow   = not inPos and buyCond
+exitNow    = false
+exitReason = ""
+exitPx     = float(na)
+
+if inPos
+    if low <= slLvl
+        exitNow    := true
+        exitReason := "ZARAR KES"
+        exitPx     := math.min(slLvl, open)
+    else if high >= tpLvl
+        exitNow    := true
+        exitReason := "KÂR AL"
+        exitPx     := math.max(tpLvl, open)
+    else if sellCond
+        exitNow    := true
+        exitReason := "SAT SİNYALİ"
+        exitPx     := close
+
+if exitNow
+    pnl = (exitPx / entryPx - 1) * 100
+    label.new(bar_index, high, "SAT · " + exitReason + "\n" + str.tostring(exitPx, format.mintick) + "\n" + (pnl >= 0 ? "+" : "") + str.tostring(pnl, "#.##") + "%", style=label.style_label_down, color=color.new(color.red, 0), textcolor=color.white, size=size.small)
+    if barstate.isconfirmed
+        alert("SOL SAT (" + exitReason + ") · Fiyat: " + str.tostring(exitPx, format.mintick) + " · Sonuç: " + str.tostring(pnl, "#.##") + "%", alert.freq_once_per_bar_close)
+    inPos   := false
+    entryPx := na
+    tpLvl   := na
+    slLvl   := na
+
+if enterNow
+    inPos   := true
+    entryPx := close
+    tpLvl   := close * (1 + tpPct / 100)
+    slLvl   := close * (1 - slPct / 100)
+    label.new(bar_index, low, "AL\n" + str.tostring(close, format.mintick) + "\nKâr al: " + str.tostring(tpLvl, format.mintick) + "\nZarar kes: " + str.tostring(slLvl, format.mintick), style=label.style_label_up, color=color.new(color.green, 0), textcolor=color.white, size=size.small)
+    if barstate.isconfirmed
+        alert("SOL AL · Fiyat: " + str.tostring(close, format.mintick) + " · Kâr al: " + str.tostring(tpLvl, format.mintick) + " · Zarar kes: " + str.tostring(slLvl, format.mintick), alert.freq_once_per_bar_close)
+
+plot(emaLen > 0 ? emaT : na, "Trend EMA", color.new(color.orange, 20), 2)
+plot(inPos ? tpLvl : na, "Kâr al seviyesi", color.new(color.green, 0), 1, plot.style_linebr)
+plot(inPos ? slLvl : na, "Zarar kes seviyesi", color.new(color.red, 0), 1, plot.style_linebr)
+
+tPos = tblYer == "Üst sağ" ? position.top_right : tblYer == "Alt sağ" ? position.bottom_right : tblYer == "Alt sol" ? position.bottom_left : tblYer == "Orta sol" ? position.middle_left : position.bottom_center
+tSz  = tblBoy == "Çok küçük" ? size.tiny : tblBoy == "Normal" ? size.normal : size.small
+var table tb = table.new(tPos, 2, 6, bgcolor=color.new(color.black, 15), border_width=1)
+if barstate.islast
+    durum = inPos ? "POZİSYONDA" : (buyCond ? "AL" : "BEKLE")
+    dRenk = inPos ? color.new(color.blue, 0) : (buyCond ? color.new(color.green, 0) : color.new(color.gray, 0))
+    table.cell(tb, 0, 0, "Durum", text_color=color.white, text_size=tSz)
+    table.cell(tb, 1, 0, durum, text_color=color.white, bgcolor=dRenk, text_size=tSz)
+    table.cell(tb, 0, 1, "RSI", text_color=color.white, text_size=tSz)
+    table.cell(tb, 1, 1, str.tostring(rsi, "#.#") + " (< " + str.tostring(rsiB) + ")", text_color=color.white, text_size=tSz)
+    table.cell(tb, 0, 2, "StochRSI K", text_color=color.white, text_size=tSz)
+    table.cell(tb, 1, 2, str.tostring(stK, "#.#") + " (< " + str.tostring(stoB) + ")", text_color=color.white, text_size=tSz)
+    table.cell(tb, 0, 3, "WaveTrend", text_color=color.white, text_size=tSz)
+    table.cell(tb, 1, 3, str.tostring(wt1, "#.#") + " (< " + str.tostring(wtOs) + ")", text_color=color.white, text_size=tSz)
+    table.cell(tb, 0, 4, "Trend (EMA)", text_color=color.white, text_size=tSz)
+    table.cell(tb, 1, 4, trendOk ? "Yukarı ✓" : "Aşağı ✗ (alış yok)", text_color=trendOk ? color.lime : color.orange, text_size=tSz)
+    table.cell(tb, 0, 5, inPos ? "Kâr al / Zarar kes" : "Son fiyat", text_color=color.white, text_size=tSz)
+    table.cell(tb, 1, 5, inPos ? str.tostring(tpLvl, format.mintick) + " / " + str.tostring(slLvl, format.mintick) : str.tostring(close, format.mintick), text_color=color.white, text_size=tSz)
