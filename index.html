@@ -76,6 +76,7 @@ button:focus-visible,.filebtn:focus-within,input:focus-visible,summary:focus-vis
 .filebtn input{position:absolute;inset:0;opacity:0;cursor:pointer}
 .params{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:10px}
 .params label{display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--muted)}
+.params select{font:500 16px var(--f-body);padding:9px 10px;border-radius:8px;border:1px solid var(--line);background:var(--soft);color:var(--ink);width:100%}
 .params input{font:500 16px var(--f-mono);padding:8px 10px;border-radius:8px;border:1px solid var(--line);background:var(--soft);color:var(--ink);width:100%}
 fieldset{border:0;padding:0;margin:0;display:flex;flex-direction:column;gap:8px}
 legend{font-size:12px;font-weight:600;color:var(--ink);padding:0;margin-bottom:6px}
@@ -106,7 +107,7 @@ pre{margin:0;font:12px/1.5 var(--f-mono);background:var(--soft);border:1px solid
 <div class="wrap">
   <header>
     <div>
-      <h1>SOL<span>/</span>USDT · 1S</h1>
+      <h1><span id="symTxt">SOL</span><span>/</span>USDT · 1S</h1>
       <p class="sub">WaveTrend + RSI + StochRSI · Spot, kaldıraçsız · Backtest ve sinyal masası</p>
     </div>
     <span id="dataBadge" class="badge warn">Örnek veri</span>
@@ -133,6 +134,12 @@ pre{margin:0;font:12px/1.5 var(--f-mono);background:var(--soft);border:1px solid
     <div class="btns">
       <label class="filebtn">CSV yükle<input id="fileIn" type="file" accept=".csv,text/csv,text/plain" multiple></label>
       <button id="liveBtn" class="primary" type="button">Veriyi yenile</button>
+    </div>
+    <div class="params">
+      <label>Coin<select id="p_sym" class="sel"><option value="SOLUSDT">SOL/USDT</option><option value="BTCUSDT">BTC/USDT</option><option value="ETHUSDT">ETH/USDT</option><option value="BNBUSDT">BNB/USDT</option><option value="XRPUSDT">XRP/USDT</option></select></label>
+      <label>Geçmiş veri<select id="p_hist" class="sel"><option value="5">7 ay</option><option value="9">1 yıl</option><option value="18">2 yıl</option></select></label>
+    </div>
+    <div class="btns" style="display:none">
       <button id="sampleBtn" type="button">Örnek veriye dön</button>
     </div>
     <div id="dataMsg" class="msg">Binance'ten canlı veri alınıyor…</div>
@@ -267,14 +274,20 @@ function mergeSet(arr){
   const m=new Map();for(const r of arr)m.set(r.t,r);
   return [...m.values()].sort((a,b)=>a.t-b.t);
 }
+let SYM='SOLUSDT',HIST=5;
+try{const v=JSON.parse(localStorage.getItem('solsig_src')||'null');if(v){SYM=v.sym||SYM;HIST=v.hist||HIST;}}catch(e){}
+function syncSrcUI(){$('p_sym').value=SYM;$('p_hist').value=String(HIST);$('symTxt').textContent=SYM.replace('USDT','');document.title=SYM.replace('USDT','')+' Sinyal Masası';}
+function onSrcChange(){SYM=$('p_sym').value;HIST=+$('p_hist').value;
+  try{localStorage.setItem('solsig_src',JSON.stringify({sym:SYM,hist:HIST}));}catch(e){}
+  syncSrcUI();$('scanBody').innerHTML='';$('scanMsg').textContent='Veri değişti. Taramayı yeniden başlat.';fetchLive(false);}
 function saveData(){
   try{ if(source==='sample'){localStorage.removeItem('solsig_d');return;}
-    localStorage.setItem('solsig_d',JSON.stringify({s:source,c:candles.map(r=>[r.t,+r.o.toFixed(4),+r.h.toFixed(4),+r.l.toFixed(4),+r.c.toFixed(4)])}));
+    localStorage.setItem('solsig_d',JSON.stringify({s:source,sym:SYM,hist:HIST,c:candles.map(r=>[r.t,+r.o.toFixed(4),+r.h.toFixed(4),+r.l.toFixed(4),+r.c.toFixed(4)])}));
   }catch(e){}
 }
 function loadSaved(){
   try{const d=JSON.parse(localStorage.getItem('solsig_d')||'null');
-    if(d&&d.c&&d.c.length>100){source=d.s;candles=d.c.map(a=>({t:a[0],o:a[1],h:a[2],l:a[3],c:a[4]}));return true;}
+    if(d&&d.c&&d.c.length>100&&(d.sym||'SOLUSDT')===SYM&&(d.hist||5)===HIST){source=d.s;candles=d.c.map(a=>({t:a[0],o:a[1],h:a[2],l:a[3],c:a[4]}));return true;}
   }catch(e){}
   return false;
 }
@@ -306,8 +319,8 @@ async function fetchLive(silent){
   let ok=false;
   for(const h of HOSTS){
     try{let all=[],end=null;
-      for(let p=0;p<5;p++){
-        const j=await getJSON(h+'/api/v3/klines?symbol=SOLUSDT&interval=1h&limit=1000'+(end?'&endTime='+end:''));
+      for(let p=0;p<HIST;p++){
+        const j=await getJSON(h+'/api/v3/klines?symbol='+SYM+'&interval=1h&limit=1000'+(end?'&endTime='+end:''));
         if(!Array.isArray(j)||!j.length)break;all=j.concat(all);end=j[0][0]-1;if(j.length<1000)break;}
       const now=Date.now();
       const rows=all.filter(k=>k[6]<now).map(k=>({t:k[0],o:+k[1],h:+k[2],l:+k[3],c:+k[4]}));
@@ -315,11 +328,12 @@ async function fetchLive(silent){
       candles=mergeSet(rows);source='live';saveData();ok=true;break;
     }catch(e){}
   }
-  if(ok){const d=new Date();setMsg('Canlı Binance verisi: '+candles.length+' kapanmış saatlik mum. Güncelleme: '+d.toLocaleTimeString('tr-TR',{hour:'2-digit',minute:'2-digit'})+'. Uygulama açıkken 5 dakikada bir yenilenir.');run();}
+  if(ok){const d=new Date();setMsg('Canlı Binance verisi ('+SYM.replace('USDT','/USDT')+'): '+candles.length+' kapanmış saatlik mum (~'+Math.round(candles.length/730)+' ay). Güncelleme: '+d.toLocaleTimeString('tr-TR',{hour:'2-digit',minute:'2-digit'})+'. Uygulama açıkken 5 dakikada bir yenilenir.');run();}
   else if(!silent) setMsg('Binance\'e bağlanılamadı. İnterneti kontrol edip "Veriyi yenile"ye bas. '+(source!=='sample'?'Şimdilik son kaydedilen veri gösteriliyor.':'Şimdilik örnek veri gösteriliyor, gerçek değildir.'),true);
   b.disabled=false;b.textContent='Veriyi yenile';busy=false;
 }
 $('liveBtn').addEventListener('click',()=>fetchLive(false));
+$('p_sym').addEventListener('change',onSrcChange);$('p_hist').addEventListener('change',onSrcChange);
 setInterval(()=>{if(document.visibilityState==='visible')fetchLive(true);},5*60e3);
 document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'&&source==='live'&&candles.length&&Date.now()-candles[candles.length-1].t>2*3600e3)fetchLive(true);});
 $('sampleBtn').addEventListener('click',()=>{candles=sample();source='sample';saveData();
@@ -560,6 +574,7 @@ window.matchMedia('(prefers-color-scheme: dark)').addEventListener?.('change',()
 new MutationObserver(()=>lastRes&&(drawPrice(lastRes),drawEq(lastRes))).observe(document.documentElement,{attributes:true,attributeFilter:['data-theme']});
 
 fillForm();
+syncSrcUI();
 if(!loadSaved())candles=sample();
 run();
 fetchLive(false);
